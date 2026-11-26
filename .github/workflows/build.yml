@@ -4,51 +4,55 @@ on: workflow_dispatch
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: 检出仓库（含 patch.zip）
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 检查补丁包
+      - name: 确认补丁包
         run: |
-          ls -lh
-          if ! ls ./*.zip >/dev/null 2>&1; then
-            echo "✗ 根目录没找到 patch.zip，请先上传"; exit 1; fi
+          echo "== 仓库根目录 =="
+          ls -la
+          ZIP="$(ls -1 ./*.zip 2>/dev/null | head -1 || true)"
+          if [ -z "$ZIP" ]; then
+            echo "✗ 根目录没有 zip 补丁包：回 Code 页上传 patch.zip（原样，不要解压，改名也行）"
+            exit 1
+          fi
+          echo "✓ 使用补丁包: $ZIP"
+          echo "PATCH_ZIP=$ZIP" >> "$GITHUB_ENV"
 
-      - name: 准备 JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: 解压补丁覆盖到工作区
+      - name: 取基线源码
         run: |
-          mkdir -p work
-          unzip -q ./*.zip -d work/
-          ls -R work | head -50
-
-      - name: 拉取基线源码 (forge/1.20.1)
-        run: |
-          cd work
-          if [ ! -f "src/main/java/me/aleksilassila/litematica/printer/Printer.java" ]; then
-            git init
-            git remote add origin https://github.com/ThinkingStudios/ForgematicaPrinter.git
-            git fetch --depth 1 origin forge/1.20.1
-            git checkout FETCH_HEAD
+          rm -rf work && mkdir -p work
+          if git clone --depth 1 -b forge/1.20.1 https://github.com/ThinkingStudios/ForgematicaPrinter.git work; then
+            echo "✓ clone 成功"
+          else
+            echo "clone 失败，改用 zip 备用地址"
+            curl -fL -o base.zip https://github.com/ThinkingStudios/ForgematicaPrinter/archive/refs/heads/forge/1.20.1.zip
+            unzip -q base.zip -d work/
+            mv work/ForgematicaPrinter-forge-1.20.1/* work/ 2>/dev/null || true
+            mv work/ForgematicaPrinter-forge-1.20.1/.[!.]* work/ 2>/dev/null || true
           fi
+          test -f work/src/main/java/me/aleksilassila/litematica/printer/Printer.java || { echo "✗ 基线源码没拿到"; exit 1; }
 
-      - name: 应用补丁与资源
+      - name: 覆盖补丁
         run: |
-          cd work
-          cp -r ../work/patch/. . 2>/dev/null || true
-          chmod +x gradlew 2>/dev/null || true
+          unzip -qo "$PATCH_ZIP" -d work/
+          test -f work/src/main/java/me/aleksilassila/litematica/printer/plus/PrinterPlus.java || { echo "✗ 补丁没覆盖进去"; exit 1; }
+          chmod +x work/gradlew 2>/dev/null || true
+          echo "✓ 补丁生效"
 
       - name: 编译
-        run: |
-          cd work
-          ./gradlew build --no-daemon -Dorg.gradle.jvmargs=-Xmx3G
+        working-directory: work
+        run: ./gradlew build --no-daemon -Dorg.gradle.jvmargs=-Xmx3G
 
       - name: 上传 jar
         uses: actions/upload-artifact@v4
         with:
           name: ForgematicaPrinterPlus-jar
           path: work/build/libs/*.jar
+          if-no-files-found: error
