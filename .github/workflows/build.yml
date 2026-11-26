@@ -1,1 +1,54 @@
+name: 构建 ForgematicaPrinter Plus
+on: workflow_dispatch
 
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库（含 patch.zip）
+        uses: actions/checkout@v4
+
+      - name: 检查补丁包
+        run: |
+          ls -lh
+          if ! ls ./*.zip >/dev/null 2>&1; then
+            echo "✗ 根目录没找到 patch.zip，请先上传"; exit 1; fi
+
+      - name: 准备 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 解压补丁覆盖到工作区
+        run: |
+          mkdir -p work
+          unzip -q ./*.zip -d work/
+          ls -R work | head -50
+
+      - name: 拉取基线源码 (forge/1.20.1)
+        run: |
+          cd work
+          if [ ! -f "src/main/java/me/aleksilassila/litematica/printer/Printer.java" ]; then
+            git init
+            git remote add origin https://github.com/ThinkingStudios/ForgematicaPrinter.git
+            git fetch --depth 1 origin forge/1.20.1
+            git checkout FETCH_HEAD
+          fi
+
+      - name: 应用补丁与资源
+        run: |
+          cd work
+          cp -r ../work/patch/. . 2>/dev/null || true
+          chmod +x gradlew 2>/dev/null || true
+
+      - name: 编译
+        run: |
+          cd work
+          ./gradlew build --no-daemon -Dorg.gradle.jvmargs=-Xmx3G
+
+      - name: 上传 jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ForgematicaPrinterPlus-jar
+          path: work/build/libs/*.jar
